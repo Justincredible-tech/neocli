@@ -1,0 +1,76 @@
+{
+  "name": "neocli",
+  "version": "2.3.0",
+  "description": "Enterprise Local AI Agent (NeoCLI) - Self-Evolving & OS-Aware Autonomous Developer",
+  "type": "module",
+  "bin": {
+    "neo": "./dist/index.js",
+    "trinity": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src/**",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist",
+    "prebuild": "npm run clean"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "ajv": "^8.12.0",
+    "ajv-formats": "^2.1.1",
+    "better-sqlite3": "^12.5.0",
+    "body-parser": "^1.20.2",
+    "boxen": "^7.1.1",
+    "chalk": "^5.3.0",
+    "csv-parse": "^5.5.3",
+    "csv-stringify": "^6.4.5",
+    "diff": "^5.1.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "glob": "^10.3.10",
+    "inquirer": "^9.2.12",
+    "log-update": "^5.0.1",
+    "marked": "^11.0.0",
+    "ollama": "^0.5.0",
+    "ora": "^7.0.1",
+    "tsx": "^4.7.0",
+    "turndown": "^7.1.2",
+    "uuid": "^9.0.0",
+    "zod": "^3.22.4",
+    "zod-to-json-schema": "^3.22.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/body-parser": "^1.19.5",
+    "@types/diff": "^5.0.8",
+    "@types/express": "^4.17.21",
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.10.0",
+    "@types/turndown": "^5.0.4",
+    "@types/uuid": "^9.0.7",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "ollama",
+    "llm",
+    "autonomous",
+    "developer",
+    "code-generation"
+  ],
+  "author": "",
+  "license": "MIT"
+}
