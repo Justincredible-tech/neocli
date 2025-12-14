@@ -34,3 +34,11 @@ coverage/
 *.tmp
 *.temp
 .cache/
+tmpfile
+_head.txt
+sprint*.txt
+screenshot.png
+test*/
+
+# Chat output files
+.neo/chatOutput*.txt

@@ -28,6 +28,9 @@ interface UIState {
   step: number;
 }
 
+/** Track last render time to throttle updates */
+const MIN_RENDER_INTERVAL_MS = 50;
+
 /**
  * AgentUI - Terminal UI manager for the agent.
  * Provides spinners, status updates, and approval prompts.
@@ -45,7 +48,7 @@ export class AgentUI {
   private messageIndex = 0;
   private interval: NodeJS.Timeout | null = null;
   private lastRenderContent: string = '';
-  private renderPending: boolean = false;
+  private lastRenderTime: number = 0;
 
   private state: UIState = {
     status: 'IDLE',
@@ -84,12 +87,16 @@ export class AgentUI {
     this.stopSpinner();
     this.stopMessageCycle();
     this.clearRenderState();
-    // Finalize logUpdate output
+    // Finalize logUpdate output - this is critical for releasing terminal control
     logUpdate.done();
-    // Clear the current line to remove any spinner artifacts
-    process.stdout.write('\x1B[2K\x1B[0G');
+    // Use readline methods for proper cursor control (more reliable than raw ANSI)
+    if (process.stdout.isTTY) {
+      readline.clearLine(process.stdout, 0);
+      readline.cursorTo(process.stdout, 0);
+    }
     this.showCursor();
-    this.restoreTerminal();
+    // Small delay to ensure terminal state is fully released before inquirer takes over
+    // This prevents cursor lag by ensuring log-update is completely done
   }
 
   /**
@@ -107,24 +114,19 @@ export class AgentUI {
   }
 
   /**
-   * Restores terminal to normal state after raw mode operations.
+   * Restores terminal to normal state.
+   * NOTE: We deliberately do NOT manipulate raw mode here.
+   * Let inquirer manage stdin/raw mode to avoid cursor lag conflicts.
    */
   private restoreTerminal(): void {
-    if (process.stdin.isTTY) {
-      try {
-        // Ensure raw mode is disabled
-        if (process.stdin.isRaw) {
-          process.stdin.setRawMode(false);
-        }
-        // DO NOT pause or read stdin here - let inquirer manage it
-      } catch {
-        // Ignore errors - stdin may not support all operations
-      }
+    // Use readline for reliable cursor positioning
+    if (process.stdout.isTTY) {
+      // Move to new line and reset cursor
+      process.stdout.write('\n');
+      readline.cursorTo(process.stdout, 0);
+    } else {
+      process.stdout.write('\n');
     }
-    // Ensure cursor is at start of a new line
-    process.stdout.write('\n');
-    // Reset cursor position to ensure proper alignment
-    process.stdout.write('\x1B[0G');
   }
 
   /**
@@ -182,6 +184,11 @@ export class AgentUI {
    * @returns True if user approves, false otherwise
    */
   async askApproval(toolName: string, args: unknown): Promise<boolean> {
+    // Allow CI/automation override
+    const autoApprove = process.env.NEO_AUTO_APPROVE;
+    if (autoApprove && autoApprove !== '0' && autoApprove.toLowerCase() !== 'false') {
+      return true;
+    }
     this.stopSpinner();
     this.stopMessageCycle();
     logUpdate.done();
@@ -291,9 +298,16 @@ export class AgentUI {
 
   /**
    * Renders the current UI state with Matrix green theme.
-   * Uses content caching to skip unnecessary renders and reduce cursor lag.
+   * Uses content caching and throttling to reduce cursor lag.
    */
   private render(): void {
+    const now = Date.now();
+
+    // Throttle renders to reduce terminal flicker and cursor lag
+    if (now - this.lastRenderTime < MIN_RENDER_INTERVAL_MS) {
+      return;
+    }
+
     const { status, tool, source, args, output, step } = this.state;
     const spinner = this.frames[this.frameIndex];
 
@@ -311,16 +325,20 @@ export class AgentUI {
       }
     }
 
-    // Create a cache key from content (without colors for comparison)
-    const cacheKey = `${title}|${content}`;
+    // Create a cache key from content (without spinner for comparison)
+    const contentWithoutSpinner = content.replace(spinner, '');
+    const cacheKey = `${title}|${contentWithoutSpinner}`;
 
-    // Skip render if content hasn't changed (only spinner frame changed)
-    // This reduces logUpdate calls significantly during idle spinning
-    if (status === 'THINKING' && this.lastRenderContent === cacheKey.replace(spinner, '')) {
-      // Only the spinner changed, still render but it's a lightweight update
+    // Skip render if content is exactly the same (only spinner frame changed during THINKING)
+    // This significantly reduces logUpdate calls and cursor manipulation
+    if (status === 'THINKING' && this.lastRenderContent === cacheKey) {
+      // Content unchanged, just update the frame in next cycle
+      this.lastRenderTime = now;
+      return;
     }
 
-    this.lastRenderContent = cacheKey.replace(spinner, '');
+    this.lastRenderContent = cacheKey;
+    this.lastRenderTime = now;
 
     // Apply colors after caching check
     const coloredSpinner = chalk.greenBright(spinner);
@@ -352,6 +370,6 @@ export class AgentUI {
    */
   private clearRenderState(): void {
     this.lastRenderContent = '';
-    this.renderPending = false;
+    this.lastRenderTime = 0;
   }
 }

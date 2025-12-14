@@ -9,17 +9,34 @@ import path from 'path';
 /** Log level type */
 type LogLevel = 'INFO' | 'WARN' | 'ERROR' | 'ACTION' | 'DEBUG';
 
-/** Maximum size for truncated strings in logs */
-const MAX_STRING_LENGTH = 1000;
-
 /** Log directory path */
 const LOG_DIR = path.join(process.cwd(), '.neo');
 
 /** Log file path */
 const LOG_FILE = path.join(LOG_DIR, 'debug.log');
 
-/** Maximum log file size before rotation (5MB) */
-const MAX_LOG_SIZE = 5 * 1024 * 1024;
+// Lazy-load config to avoid circular dependencies
+let configCache: { logging: { maxLogSize: number; maxStringLength: number; maxBackups: number } } | null = null;
+
+function getConfig() {
+  if (!configCache) {
+    // Default values if config not yet loaded
+    configCache = {
+      logging: {
+        maxLogSize: 5 * 1024 * 1024,
+        maxStringLength: 1000,
+        maxBackups: 3,
+      }
+    };
+    // Try to load actual config
+    import('../config.js').then(mod => {
+      configCache = mod.config;
+    }).catch(() => {
+      // Keep defaults if config fails to load
+    });
+  }
+  return configCache;
+}
 
 /**
  * Ensures the log directory exists.
@@ -40,20 +57,21 @@ function ensureLogDirectory(): boolean {
  */
 function rotateLogIfNeeded(): void {
   try {
+    const cfg = getConfig();
     if (fs.existsSync(LOG_FILE)) {
       const stats = fs.statSync(LOG_FILE);
-      if (stats.size > MAX_LOG_SIZE) {
+      if (stats.size > cfg.logging.maxLogSize) {
         const backupPath = `${LOG_FILE}.${Date.now()}.old`;
         fs.renameSync(LOG_FILE, backupPath);
 
-        // Clean up old backup files (keep only last 3)
+        // Clean up old backup files
         const dir = path.dirname(LOG_FILE);
         const backups = fs.readdirSync(dir)
           .filter(f => f.startsWith('debug.log.') && f.endsWith('.old'))
           .sort()
           .reverse();
 
-        for (let i = 3; i < backups.length; i++) {
+        for (let i = cfg.logging.maxBackups; i < backups.length; i++) {
           try {
             fs.unlinkSync(path.join(dir, backups[i]));
           } catch {
@@ -96,10 +114,12 @@ function serializeError(error: unknown): Record<string, unknown> {
 function write(level: LogLevel, message: string, data?: unknown): void {
   const timestamp = new Date().toISOString();
   let content = `[${timestamp}] [${level.padEnd(6)}] ${message}`;
+  const cfg = getConfig();
 
   if (data !== undefined) {
     try {
       const seen = new WeakSet();
+      const maxLen = cfg.logging.maxStringLength;
       const json = JSON.stringify(data, (key, value) => {
         // Handle circular references
         if (typeof value === 'object' && value !== null) {
@@ -109,8 +129,8 @@ function write(level: LogLevel, message: string, data?: unknown): void {
           seen.add(value);
         }
         // Truncate large strings
-        if (typeof value === 'string' && value.length > MAX_STRING_LENGTH) {
-          return value.substring(0, MAX_STRING_LENGTH) + `... [${value.length - MAX_STRING_LENGTH} chars truncated]`;
+        if (typeof value === 'string' && value.length > maxLen) {
+          return value.substring(0, maxLen) + `... [${value.length - maxLen} chars truncated]`;
         }
         return value;
       }, 2);

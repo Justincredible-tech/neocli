@@ -44,6 +44,7 @@ interface OllamaEmbeddingResponse {
 export class ModelRouter {
   private readonly host: string;
   private readonly defaultModel: string;
+  private readonly fallbackModel: string;
   private readonly embeddingModel: string;
   private readonly maxRetries: number;
   private readonly timeoutMs: number;
@@ -54,6 +55,7 @@ export class ModelRouter {
   constructor() {
     this.host = config.llm.host;
     this.defaultModel = config.llm.defaultModel;
+    this.fallbackModel = config.llm.fallbackModel;
     this.embeddingModel = config.llm.embeddingModel;
     this.maxRetries = config.llm.maxRetries;
     this.timeoutMs = config.llm.timeoutMs;
@@ -100,89 +102,113 @@ export class ModelRouter {
    * @throws Error if all retries fail or request is aborted
    */
   async generate(prompt: string, system: string, signal?: AbortSignal): Promise<string> {
+    const attemptModel = async (modelName: string): Promise<string> => {
+      let attempt = 0;
+      let lastError: Error | null = null;
+
+      while (attempt < this.maxRetries) {
+        try {
+          if (signal?.aborted) {
+            throw new Error("ABORTED");
+          }
+
+          const { signal: combinedSignal, clear: clearTimeoutFn } = this.createTimeoutSignal(signal);
+
+          try {
+            const response = await fetch(`${this.host}/api/chat`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: modelName,
+                messages: [
+                  { role: 'system', content: system },
+                  { role: 'user', content: prompt }
+                ],
+                stream: false,
+                options: {
+                  temperature: this.temperature,
+                  num_ctx: this.contextWindowSize,
+                  stop: this.stopSequences
+                }
+              }),
+              signal: combinedSignal
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text().catch(() => 'Unknown error');
+              throw new Error(`Ollama API Error (${response.status}): ${response.statusText}. ${errorText}`);
+            }
+
+            const data = await response.json() as OllamaChatResponse;
+
+            if (!data.message?.content) {
+              throw new Error('Invalid response format: missing message content');
+            }
+
+            logger.info("LLM generation complete", {
+              model: modelName,
+              tokenCount: data.eval_count,
+              duration: data.total_duration
+            });
+
+            return data.message.content;
+          } finally {
+            clearTimeoutFn();
+          }
+
+        } catch (e: unknown) {
+          const error = e as Error;
+
+          if (error.name === 'AbortError' || error.message === 'ABORTED' || error.message === 'Request timeout') {
+            if (error.message === 'Request timeout') {
+              logger.warn("LLM request timed out", { attempt, timeout: this.timeoutMs, model: modelName });
+              throw new Error("Request timed out. The model may be overloaded or the prompt too long.");
+            }
+            throw new Error("ABORTED");
+          }
+
+          lastError = error;
+          attempt++;
+
+          if (attempt < this.maxRetries) {
+            const backoffMs = 1000 * Math.pow(2, attempt - 1);
+            logger.warn("LLM request failed, retrying", { attempt, backoffMs, model: modelName, error: error.message });
+            await new Promise(resolve => setTimeout(resolve, backoffMs));
+          }
+        }
+      }
+
+      logger.error("LLM request failed after all retries", { model: modelName, error: lastError?.message });
+      throw lastError || new Error('LLM request failed');
+    };
+
+    // Try default model, then fallback if configured
     let attempt = 0;
     let lastError: Error | null = null;
 
-    while (attempt < this.maxRetries) {
-      try {
-        // Check for abort before starting
-        if (signal?.aborted) {
-          throw new Error("ABORTED");
-        }
+    try {
+      return await attemptModel(this.defaultModel);
+    } catch (primaryError) {
+      lastError = primaryError as Error;
 
-        const { signal: combinedSignal, clear: clearTimeoutFn } = this.createTimeoutSignal(signal);
-
+      const shouldFallback = this.fallbackModel && this.fallbackModel !== this.defaultModel;
+      if (shouldFallback) {
+        logger.warn("Primary model failed, attempting fallback model", {
+          primary: this.defaultModel,
+          fallback: this.fallbackModel,
+          error: lastError?.message
+        });
         try {
-          const response = await fetch(`${this.host}/api/chat`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              model: this.defaultModel,
-              messages: [
-                { role: 'system', content: system },
-                { role: 'user', content: prompt }
-              ],
-              stream: false,
-              options: {
-                temperature: this.temperature,
-                num_ctx: this.contextWindowSize,
-                stop: this.stopSequences
-              }
-            }),
-            signal: combinedSignal
-          });
-
-          if (!response.ok) {
-            const errorText = await response.text().catch(() => 'Unknown error');
-            throw new Error(`Ollama API Error (${response.status}): ${response.statusText}. ${errorText}`);
-          }
-
-          const data = await response.json() as OllamaChatResponse;
-
-          if (!data.message?.content) {
-            throw new Error('Invalid response format: missing message content');
-          }
-
-          logger.info("LLM generation complete", {
-            model: this.defaultModel,
-            tokenCount: data.eval_count,
-            duration: data.total_duration
-          });
-
-          return data.message.content;
-        } finally {
-          // Ensure timers are cleaned up regardless of success or failure
-          clearTimeoutFn();
-        }
-
-      } catch (e: unknown) {
-        const error = e as Error;
-
-        // Handle abort - don't retry
-        if (error.name === 'AbortError' || error.message === 'ABORTED' || error.message === 'Request timeout') {
-          if (error.message === 'Request timeout') {
-            logger.warn("LLM request timed out", { attempt, timeout: this.timeoutMs });
-            throw new Error("Request timed out. The model may be overloaded or the prompt too long.");
-          }
-          throw new Error("ABORTED");
-        }
-
-        lastError = error;
-        attempt++;
-
-        if (attempt < this.maxRetries) {
-          // Exponential backoff
-          const backoffMs = 1000 * Math.pow(2, attempt - 1);
-          logger.warn("LLM request failed, retrying", { attempt, backoffMs, error: error.message });
-          await new Promise(resolve => setTimeout(resolve, backoffMs));
+          return await attemptModel(this.fallbackModel);
+        } catch (fallbackError) {
+          lastError = fallbackError as Error;
         }
       }
     }
 
-    // All retries exhausted
-    logger.error("LLM request failed after all retries", lastError);
+    // All attempts exhausted
     throw lastError || new Error('LLM request failed');
   }
 
@@ -214,7 +240,7 @@ export class ModelRouter {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: config.llm.defaultModel,
+            model: this.defaultModel,
             messages: [
               { role: 'system', content: system },
               { role: 'user', content: prompt }
@@ -262,7 +288,7 @@ export class ModelRouter {
               if (data.done) {
                 onChunk('', true);
                 logger.info("LLM streaming complete", {
-                  model: config.llm.defaultModel,
+                  model: this.defaultModel,
                   tokenCount: data.eval_count,
                   duration: data.total_duration
                 });

@@ -14,6 +14,7 @@ import chalk from 'chalk';
 import inquirer from 'inquirer';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 
 /** ASCII art boot sequence - Matrix green theme */
 const BOOT_ART = `
@@ -52,23 +53,19 @@ function loadProjectConfig(): string {
 
 /**
  * Ensures terminal is in correct state for input.
+ * Uses readline methods for reliable cross-platform cursor control.
  */
 function resetTerminalState(): void {
-  if (process.stdin.isTTY) {
-    try {
-      // Ensure raw mode is off so inquirer can work properly
-      if (process.stdin.isRaw) {
-        process.stdin.setRawMode(false);
-      }
-      // DO NOT pause stdin - inquirer needs it active
-      // Just ensure it's in the right mode
-    } catch {
-      // Ignore errors
-    }
+  // Show cursor using ANSI (this is universally supported)
+  process.stdout.write('\x1B[?25h');
+
+  // Use readline for cursor positioning - more reliable than raw ANSI on Windows
+  if (process.stdout.isTTY) {
+    readline.cursorTo(process.stdout, 0);
   }
-  // Show cursor and reset its position
-  process.stdout.write('\x1B[?25h'); // Show cursor
-  process.stdout.write('\x1B[0G');   // Move cursor to column 0
+
+  // NOTE: We deliberately do NOT manipulate raw mode here.
+  // Inquirer manages its own terminal state, and interfering causes cursor lag.
 }
 
 /**
@@ -193,11 +190,12 @@ async function main(): Promise<void> {
   while (true) {
     try {
       resetTerminalState();
-      // Allow terminal to fully settle before accepting input
-      await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Clear any stale terminal state from logUpdate
-      process.stdout.write('\x1B[0K'); // Clear to end of line
+      // Clear line using readline (more reliable than raw ANSI)
+      if (process.stdout.isTTY) {
+        readline.clearLine(process.stdout, 0);
+        readline.cursorTo(process.stdout, 0);
+      }
 
       const { input } = await inquirer.prompt([{
         type: 'input',

@@ -37,12 +37,20 @@ const tool: Tool = {
         fs.mkdirSync(skillsDir, { recursive: true });
       }
 
-      // 4. Validate Code Structure (Heuristic)
-      if (!code.includes('export async function run')) {
+      // 4. Normalize escaped newlines often returned by LLMs
+      let normalizedCode = code;
+      if (!code.includes('\n') && code.includes('\\n')) {
+        normalizedCode = code
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t');
+      }
+
+      // 5. Validate Code Structure (Heuristic)
+      if (!normalizedCode.includes('export async function run')) {
         return "ERROR: The code must export an async function named 'run'. Example: `export async function run(args: any): Promise<string> { ... }`";
       }
 
-      // 5. Construct Metadata Block
+      // 6. Construct Metadata Block
       // We default the schema to "any" if not provided, but encouraging specific schemas is better.
       const meta = {
         name: cleanName,
@@ -54,17 +62,18 @@ const tool: Tool = {
 ${JSON.stringify(meta, null, 2)}
 NEO_SKILL_META */
 
-${code}
+${normalizedCode}
 `;
 
-      // 6. Write to Disk
+      // 7. Write to Disk
       const filePath = path.join(skillsDir, filename);
       fs.writeFileSync(filePath, fileContent);
 
       return `SUCCESS: Skill '${cleanName}' has been saved to ${filePath}. \n[SYSTEM]: The Agent capabilities have been updated. You can now use this skill in future turns.`;
 
-    } catch (e: any) {
-      return `ERROR creating skill: ${e.message}`;
+    } catch (e: unknown) {
+      const error = e as Error;
+      return `ERROR creating skill: ${error.message}`;
     }
   }
 };

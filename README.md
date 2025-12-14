@@ -127,7 +127,7 @@ This is a React e-commerce application with a Node.js backend.
 
 1. **Node.js 18+** — [Download](https://nodejs.org/)
 2. **Ollama** — [Download](https://ollama.ai/)
-3. **A Code Model** — We recommend `qwen30-coder:30b`
+3. **A Code Model** - We recommend `qwen3-coder:30b`
 
 ### Install Ollama & Model
 
@@ -138,7 +138,7 @@ curl -fsSL https://ollama.ai/install.sh | sh
 # For Windows, download from https://ollama.ai/download
 
 # Pull a coding model
-ollama pull qwen30-coder:30b
+ollama pull qwen3-coder:30b
 
 # Or use a smaller model for less powerful hardware
 ollama pull qwen2.5-coder:7b
@@ -238,7 +238,7 @@ Create a `.env` file in the project root:
 ```env
 # Ollama Configuration
 OLLAMA_HOST=http://127.0.0.1:11434
-DEFAULT_MODEL=qwen30-coder:30b
+DEFAULT_MODEL=qwen3-coder:30b
 EMBEDDING_MODEL=nomic-embed-text
 
 # Context & Performance
@@ -443,9 +443,9 @@ ollama pull qwen2.5-coder:32b
 
 ### Slow responses
 
-- Use a smaller model (`7b` instead of `32b`)
-- Reduce `CONTEXT_WINDOW_SIZE` in `.env`
-- Ensure Ollama has GPU acceleration enabled
+- If you hit a timeout, just rerun the prompt; the agent now trims repo maps to reduce token load.
+- Reduce `CONTEXT_WINDOW_SIZE` in `.env` if needed.
+- Ensure Ollama has GPU acceleration enabled.
 
 ### Out of memory
 

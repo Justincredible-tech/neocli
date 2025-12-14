@@ -147,11 +147,16 @@ export class MemoryStore {
     const effectiveLimit = Math.min(limit || this.maxSearchResults, this.maxSearchResults);
 
     // Calculate similarity scores
-    const scored = this.memories
-      .filter(mem => mem.embedding && mem.embedding.length > 0)
+    // Filter first to get only memories with valid embeddings, then map with type guard
+    const memoriesWithEmbeddings = this.memories.filter(
+      (mem): mem is MemoryFragment & { embedding: number[] } =>
+        Array.isArray(mem.embedding) && mem.embedding.length > 0
+    );
+
+    const scored = memoriesWithEmbeddings
       .map(mem => ({
         mem,
-        score: cosineSimilarity(queryEmbedding, mem.embedding!)
+        score: cosineSimilarity(queryEmbedding, mem.embedding)
       }))
       .filter(item => item.score > this.similarityThreshold)
       .sort((a, b) => b.score - a.score)

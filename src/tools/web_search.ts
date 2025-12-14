@@ -6,6 +6,7 @@
  */
 import { Tool, ToolArgs } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { config } from '../config.js';
 
 interface WebSearchArgs extends ToolArgs {
   query: string;
@@ -67,7 +68,7 @@ const tool: Tool = {
       logger.debug("Web search", { query: trimmedQuery, url });
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const timeoutId = setTimeout(() => controller.abort(), config.webSearch.timeoutMs);
 
       const response = await fetch(url, {
         headers: {

@@ -4,18 +4,7 @@ import { glob } from 'glob';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SecurityGuard } from '../utils/security.js';
-
-/** Maximum number of files to search */
-const MAX_FILES = 500;
-
-/** Maximum number of results to return */
-const MAX_RESULTS = 50;
-
-/** Maximum file size to search (1MB) */
-const MAX_FILE_SIZE = 1024 * 1024;
-
-/** Supported file extensions for searching */
-const SEARCHABLE_EXTENSIONS = ['ts', 'js', 'tsx', 'jsx', 'json', 'md', 'txt', 'py', 'yaml', 'yml', 'html', 'css', 'scss'];
+import { config } from '../config.js';
 
 interface GrepArgs extends ToolArgs {
   pattern: string;
@@ -72,7 +61,7 @@ const tool: Tool = {
       }
 
       // 6. Find files to search
-      const extensionGlob = `**/*.{${SEARCHABLE_EXTENSIONS.join(',')}}`;
+      const extensionGlob = `**/*.{${config.search.searchableExtensions.join(',')}}`;
       const files = await glob(extensionGlob, {
         cwd: resolvedSearchPath,
         ignore: ['node_modules/**', 'dist/**', 'build/**', '.git/**', '.neo/memory.json', '.neo/memory/**', 'coverage/**'],
@@ -85,8 +74,8 @@ const tool: Tool = {
       }
 
       // Limit files to search
-      const filesToSearch = files.slice(0, MAX_FILES);
-      const effectiveMaxResults = Math.min(maxResults || MAX_RESULTS, MAX_RESULTS);
+      const filesToSearch = files.slice(0, config.search.maxFiles);
+      const effectiveMaxResults = Math.min(maxResults || config.search.maxResults, config.search.maxResults);
 
       // 7. Search files with safety limits
       const results: string[] = [];
@@ -101,7 +90,7 @@ const tool: Tool = {
         try {
           // Check file size before reading
           const stats = fs.statSync(fullPath);
-          if (stats.size > MAX_FILE_SIZE) {
+          if (stats.size > config.search.maxFileSize) {
             filesSkipped++;
             continue;
           }
@@ -147,8 +136,8 @@ const tool: Tool = {
       if (filesSkipped > 0) {
         metadata.push(`[${filesSkipped} files skipped (too large or unreadable)]`);
       }
-      if (files.length > MAX_FILES) {
-        metadata.push(`[Searched ${MAX_FILES} of ${files.length} total files]`);
+      if (files.length > config.search.maxFiles) {
+        metadata.push(`[Searched ${config.search.maxFiles} of ${files.length} total files]`);
       }
 
       if (metadata.length > 0) {

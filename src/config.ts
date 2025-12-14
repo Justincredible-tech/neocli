@@ -47,6 +47,8 @@ export const config = {
     host: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
     /** Default model to use for generation */
     defaultModel: process.env.DEFAULT_MODEL || 'qwen3-coder:30b',
+    /** Fallback model to use if default model fails or times out */
+    fallbackModel: process.env.FALLBACK_MODEL || 'codegemma:7b',
     /** Model to use for embeddings */
     embeddingModel: process.env.EMBEDDING_MODEL || 'nomic-embed-text',
     /** Context window size in tokens */
@@ -92,13 +94,15 @@ export const config = {
   /** Search/grep configuration */
   search: {
     /** Maximum number of files to search */
-    maxFiles: 500,
+    maxFiles: envInt('SEARCH_MAX_FILES', 500),
     /** Maximum number of search results */
-    maxResults: 50,
+    maxResults: envInt('SEARCH_MAX_RESULTS', 50),
     /** Maximum file size to search (1MB) */
-    maxFileSize: 1024 * 1024,
+    maxFileSize: envInt('SEARCH_MAX_FILE_SIZE', 1024 * 1024),
     /** Maximum regex pattern length */
     maxPatternLength: 500,
+    /** Searchable file extensions */
+    searchableExtensions: ['ts', 'js', 'tsx', 'jsx', 'json', 'md', 'txt', 'py', 'yaml', 'yml', 'html', 'css', 'scss'],
   },
 
   /** Memory configuration */
@@ -117,6 +121,28 @@ export const config = {
     maxCommitMessageLength: 500,
     /** Maximum URL length */
     maxUrlLength: 2048,
+  },
+
+  /** Skill execution configuration */
+  skills: {
+    /** Timeout for skill execution in milliseconds */
+    executionTimeoutMs: envInt('SKILL_TIMEOUT_MS', 30000),
+  },
+
+  /** Web search configuration */
+  webSearch: {
+    /** Timeout for web search requests in milliseconds */
+    timeoutMs: envInt('WEB_SEARCH_TIMEOUT_MS', 15000),
+  },
+
+  /** Logging configuration */
+  logging: {
+    /** Maximum log file size in bytes (5MB) */
+    maxLogSize: envInt('MAX_LOG_SIZE', 5 * 1024 * 1024),
+    /** Maximum string length in logs */
+    maxStringLength: 1000,
+    /** Number of old log backups to keep */
+    maxBackups: 3,
   },
 
   /** UI configuration */
