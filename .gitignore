@@ -42,3 +42,7 @@ test*/
 
 # Chat output files
 .neo/chatOutput*.txt
+
+# Research/documentation files
+*.docx
+*.doc

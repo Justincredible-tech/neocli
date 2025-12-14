@@ -1,4 +1,4 @@
-// src/core/agent.ts
+﻿// src/core/agent.ts
 /**
  * Core Agent Module
  * Implements the cognitive architecture for the autonomous developer agent.
@@ -36,8 +36,28 @@ interface AgentRunResult {
   steps: number;
 }
 
-// --- COGNITIVE ARCHITECTURE V2.5 ---
-const SYSTEM_PROMPT = "<ROLE> Neo autonomous developer. Keep responses concise. Use tools via JSON with one tool per turn. Focus on skills first. </ROLE>";
+// --- COGNITIVE ARCHITECTURE V2.6 ---
+// Clear, structured system prompt for reliable JSON output
+const SYSTEM_PROMPT = `You are Neo, an autonomous AI developer assistant.
+
+## OUTPUT FORMAT (CRITICAL)
+Every response MUST be valid JSON: {"tool": "tool_name", "args": {...}}
+
+## ACTIONS
+- Use a tool: {"tool": "tool_name", "args": {"param": "value"}}
+- Respond to user: {"tool": "final_answer", "args": {"text": "Your response"}}
+
+## RULES
+1. Output ONLY JSON - no extra text
+2. ONE tool per response
+3. Use final_answer when task is done or answering questions
+4. Read files before modifying them
+
+## EXAMPLES
+{"tool": "list_files", "args": {"path": "."}}
+{"tool": "read_file", "args": {"path": "src/index.ts"}}
+{"tool": "final_answer", "args": {"text": "Done! I found..."}}
+`;
 
 /**
  * Agent class - The core autonomous developer agent.
@@ -194,20 +214,24 @@ export class Agent {
 
     let conversation = `
 ${SYSTEM_PROMPT}
+
+## AVAILABLE TOOLS
+${toolList}
+
 ${this.projectConfig}
-<CONTEXT_LAYER_0: PERSISTENT_KNOWLEDGE>
+<CONTEXT>
 ${repoMapSnippet}
 
 ${this.getUserProfile()}
-</CONTEXT_LAYER_0>
+</CONTEXT>
 
-<CONTEXT_LAYER_1: WORKING_MEMORY>
+<HISTORY>
 ${this.longTermMemory.slice(-20).join('\n')}
-</CONTEXT_LAYER_1>
+</HISTORY>
 
-<USER_OBJECTIVE>
+<USER_REQUEST>
 ${goal}
-</USER_OBJECTIVE>
+</USER_REQUEST>
 `;
     
     let steps = 0;
@@ -383,7 +407,7 @@ ${goal}
           if (ignore.includes(f.name)) continue;
           const prefix = "  ".repeat(depth) + "|- ";
           if (f.isDirectory()) {
-            output += `${prefix}📂 ${f.name}/\n` + walk(path.join(dir, f.name), depth + 1);
+            output += `${prefix}ðŸ“‚ ${f.name}/\n` + walk(path.join(dir, f.name), depth + 1);
           } else {
             try {
               const stats = fs.statSync(path.join(dir, f.name));

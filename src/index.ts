@@ -4,6 +4,9 @@
  * NeoCLI Entry Point
  * Enterprise Local AI Agent - Self-Evolving & OS-Aware Autonomous Developer
  * Matrix-themed interface with green color scheme.
+ *
+ * Uses custom lightweight readline input instead of inquirer to prevent cursor lag.
+ * See CLICursorLagResearch.docx for technical background.
  */
 import { Agent } from './core/agent.js';
 import { commands, CommandContext } from './core/commands.js';
@@ -11,7 +14,6 @@ import { router } from './core/llm.js';
 import { config } from './config.js';
 import { logger } from './utils/logger.js';
 import chalk from 'chalk';
-import inquirer from 'inquirer';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
@@ -52,20 +54,45 @@ function loadProjectConfig(): string {
 }
 
 /**
+ * Lightweight input prompt using raw readline.
+ * This replaces inquirer to eliminate character-by-character redraw overhead.
+ * The prompt is written once, and input is collected without repainting.
+ *
+ * @param promptText - The prompt to display
+ * @returns Promise resolving to user input
+ */
+function promptInput(promptText: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: true,
+    });
+
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+
+    // Handle Ctrl+C gracefully
+    rl.on('SIGINT', () => {
+      rl.close();
+      reject(new Error('User force closed'));
+    });
+
+    rl.on('close', () => {
+      // Already resolved or rejected
+    });
+  });
+}
+
+/**
  * Ensures terminal is in correct state for input.
- * Uses readline methods for reliable cross-platform cursor control.
+ * Minimal operations to avoid interfering with readline.
  */
 function resetTerminalState(): void {
-  // Show cursor using ANSI (this is universally supported)
+  // Show cursor
   process.stdout.write('\x1B[?25h');
-
-  // Use readline for cursor positioning - more reliable than raw ANSI on Windows
-  if (process.stdout.isTTY) {
-    readline.cursorTo(process.stdout, 0);
-  }
-
-  // NOTE: We deliberately do NOT manipulate raw mode here.
-  // Inquirer manages its own terminal state, and interfering causes cursor lag.
 }
 
 /**
@@ -186,24 +213,13 @@ async function main(): Promise<void> {
     }
   }
 
-  // Main REPL loop
+  // Main REPL loop - uses lightweight readline instead of inquirer for zero cursor lag
   while (true) {
     try {
       resetTerminalState();
 
-      // Clear line using readline (more reliable than raw ANSI)
-      if (process.stdout.isTTY) {
-        readline.clearLine(process.stdout, 0);
-        readline.cursorTo(process.stdout, 0);
-      }
-
-      const { input } = await inquirer.prompt([{
-        type: 'input',
-        name: 'input',
-        message: chalk.greenBright('Neo >'),
-        prefix: ''
-      }]);
-
+      // Use lightweight prompt - single write, no per-keystroke repainting
+      const input = await promptInput(chalk.bold.greenBright('Neo > '));
       const trimmedInput = input.trim();
       if (!trimmedInput) continue;
 

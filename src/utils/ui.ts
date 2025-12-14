@@ -3,6 +3,11 @@
  * Agent UI Module
  * Handles terminal rendering, spinners, and user interaction.
  * Matrix-themed with green color scheme.
+ *
+ * Optimized for minimal cursor lag using:
+ * - Single-line spinner updates during THINKING (no full box redraw)
+ * - Aggressive content caching to skip unnecessary renders
+ * - Double-buffering: build complete frame before single stdout.write()
  */
 import logUpdate from 'log-update';
 import boxen from 'boxen';
@@ -28,8 +33,10 @@ interface UIState {
   step: number;
 }
 
-/** Track last render time to throttle updates */
-const MIN_RENDER_INTERVAL_MS = 50;
+/** Throttle interval for content changes */
+const MIN_RENDER_INTERVAL_MS = 100;
+/** Higher throttle for spinner/message cycling to reduce terminal load */
+const SPINNER_THROTTLE_MS = 500;
 
 /**
  * AgentUI - Terminal UI manager for the agent.
@@ -298,71 +305,66 @@ export class AgentUI {
 
   /**
    * Renders the current UI state with Matrix green theme.
-   * Uses content caching and throttling to reduce cursor lag.
+   * Optimized for minimal cursor lag:
+   * - THINKING uses simple single-line format (no box) for faster updates
+   * - EXECUTING uses full box only when content changes
+   * - Higher throttle during spinner-only changes
    */
   private render(): void {
     const now = Date.now();
-
-    // Throttle renders to reduce terminal flicker and cursor lag
-    if (now - this.lastRenderTime < MIN_RENDER_INTERVAL_MS) {
-      return;
-    }
-
     const { status, tool, source, args, output, step } = this.state;
     const spinner = this.frames[this.frameIndex];
 
-    let content = '';
-    const title = ` NEO AGENT [Step ${step}] `;
+    // Create cache key for content
+    // THINKING: only track step changes (messages are cosmetic)
+    // EXECUTING: track tool, args, and output changes
+    const contentKey = status === 'THINKING'
+      ? `THINKING:${step}`  // Message changes are cosmetic, throttled more
+      : `EXEC:${tool}:${args}:${output}`;
 
-    if (status === 'THINKING') {
-      // Matrix green theme - dynamic message
-      content = `${spinner} Neural Engine: ${this.getCurrentMessage()}`;
-    } else if (status === 'EXECUTING') {
-      // Matrix green theme for execution
-      content = `${spinner} Action: ${tool} (${source})\n   Input:  ${args}`;
-      if (output) {
-        content += `\n   Result: ${output}`;
-      }
-    }
+    const isSpinnerOnlyChange = this.lastRenderContent === contentKey;
 
-    // Create a cache key from content (without spinner for comparison)
-    const contentWithoutSpinner = content.replace(spinner, '');
-    const cacheKey = `${title}|${contentWithoutSpinner}`;
-
-    // Skip render if content is exactly the same (only spinner frame changed during THINKING)
-    // This significantly reduces logUpdate calls and cursor manipulation
-    if (status === 'THINKING' && this.lastRenderContent === cacheKey) {
-      // Content unchanged, just update the frame in next cycle
-      this.lastRenderTime = now;
+    // Apply different throttling: higher for spinner-only, lower for content changes
+    const throttleMs = isSpinnerOnlyChange ? SPINNER_THROTTLE_MS : MIN_RENDER_INTERVAL_MS;
+    if (now - this.lastRenderTime < throttleMs) {
       return;
     }
 
-    this.lastRenderContent = cacheKey;
+    this.lastRenderContent = contentKey;
     this.lastRenderTime = now;
 
-    // Apply colors after caching check
+    // Build the frame in memory (double-buffering)
+    let frame: string;
     const coloredSpinner = chalk.greenBright(spinner);
-    let coloredContent = '';
 
     if (status === 'THINKING') {
-      coloredContent = `${coloredSpinner} ${chalk.greenBright('Neural Engine:')} ${chalk.green(this.getCurrentMessage())}`;
+      // OPTIMIZED: Simple single-line format - much less ANSI overhead than boxen
+      const header = chalk.green(`── NEO [Step ${step}] ──`);
+      const message = chalk.green(this.getCurrentMessage());
+      frame = `${header} ${coloredSpinner} ${message}`;
     } else if (status === 'EXECUTING') {
-      coloredContent = `${coloredSpinner} ${chalk.bold.greenBright('Action:')} ${chalk.greenBright(tool)} ${chalk.green.dim(`(${source})`)}\n` +
+      // Full box for execution (content changes are less frequent here)
+      let coloredContent = `${coloredSpinner} ${chalk.bold.greenBright('Action:')} ${chalk.greenBright(tool)} ${chalk.green.dim(`(${source})`)}\n` +
         `   ${chalk.green.dim('Input:')}  ${chalk.green(args)}`;
       if (output) {
         coloredContent += `\n   ${chalk.green.dim('Result:')} ${chalk.green(output)}`;
       }
+
+      frame = boxen(coloredContent, {
+        padding: 0,
+        margin: 0,
+        borderStyle: 'round',
+        borderColor: 'green',
+        title: ` NEO AGENT [Step ${step}] `,
+        titleAlignment: 'center',
+        width: this.boxWidth
+      });
+    } else {
+      return; // Don't render IDLE or WAITING_APPROVAL
     }
 
-    logUpdate(boxen(coloredContent, {
-      padding: 0,
-      margin: 0,
-      borderStyle: 'round',
-      borderColor: 'green',
-      title: title,
-      titleAlignment: 'center',
-      width: this.boxWidth
-    }));
+    // Single write to stdout via logUpdate
+    logUpdate(frame);
   }
 
   /**
