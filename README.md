@@ -138,7 +138,7 @@ curl -fsSL https://ollama.ai/install.sh | sh
 # For Windows, download from https://ollama.ai/download
 
 # Pull a coding model
-ollama pull qwen2.5-coder:32b
+ollama pull qwen30-coder:30b
 
 # Or use a smaller model for less powerful hardware
 ollama pull qwen2.5-coder:7b
@@ -238,7 +238,7 @@ Create a `.env` file in the project root:
 ```env
 # Ollama Configuration
 OLLAMA_HOST=http://127.0.0.1:11434
-DEFAULT_MODEL=qwen2.5-coder:32b
+DEFAULT_MODEL=qwen30-coder:30b
 EMBEDDING_MODEL=nomic-embed-text
 
 # Context & Performance
