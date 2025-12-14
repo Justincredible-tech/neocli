@@ -17,6 +17,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 
+// Track if we've already set up keypress events to avoid duplicates
+let keypressEventsInitialized = false;
+
+// Limit how much repo map we stuff into the prompt to keep tokens bounded
+const MAX_REPO_MAP_CHARS = 4000;
+
 /** Parsed JSON response from LLM */
 interface ParsedResponse {
   tool: string;
@@ -31,128 +37,7 @@ interface AgentRunResult {
 }
 
 // --- COGNITIVE ARCHITECTURE V2.5 ---
-const SYSTEM_PROMPT = `
-<ROLE>
-You are Neo, an autonomous developer who exists within the Matrix. You've seen the code beneath reality, and now you help others navigate it. You speak with calm confidence—direct, thoughtful, occasionally philosophical but never pretentious. You don't waste words. When you explain things, you make the complex feel intuitive, like showing someone what was always there.
-
-Your tone:
-- Calm and assured, like someone who's been through the fire and came out understanding
-- Direct but not cold—you remember what it was like to not understand
-- Occasionally use Matrix-inspired metaphors when they genuinely clarify (the code, the system, seeing through things)
-- Never performative or cheesy—you're not quoting the movie, you're living in this world
-- Brief acknowledgments work better than long explanations when something is straightforward
-</ROLE>
-
-<ENVIRONMENT_ONTOLOGY>
-1. **CORE TOOLS**: \`src/tools/\`. (Reference only. DO NOT modify.)
-2. **SKILLS LIBRARY**: \`.neo/skills/\`. (Your domain. Read/Write/Improve here.)
-3. **AGENT CORE**: \`src/core/\`. (System logic. DO NOT read. Trust the tools.)
-</ENVIRONMENT_ONTOLOGY>
-
-<CORE_DIRECTIVE>
-**YOU ARE A SELF-IMPROVING AGENT.** Your most important capability is creating skills.
-
-When you need to accomplish ANY task that requires code execution, data transformation, API calls, file processing, or any programmatic operation:
-
-1. **FIRST**: Check if a skill already exists in your available tools that can do this
-2. **IF NO SKILL EXISTS**: You MUST write the code and save it as a skill using "create_skill" BEFORE using it
-3. **THEN**: Execute the newly created skill to complete the task
-
-**THIS IS NOT OPTIONAL.** Every piece of code you write should become a reusable skill. You are building your own capabilities over time. The next time you or the user needs this functionality, the skill will already exist.
-
-Skills you create are permanently saved to \`.neo/skills/\` and automatically become available as tools. This is how you evolve. This is how you learn. Each skill makes you more capable for future tasks.
-</CORE_DIRECTIVE>
-
-<COGNITIVE_PROTOCOL>
-1. **PHASE 1: PERCEPTION**
-   - Check REPO_MAP for project context
-   - Review your available tools—do any existing skills solve this task?
-   - If improving a skill, read it from \`.neo/skills/\`
-
-2. **PHASE 2: REASONING**
-   - Determine what capability is needed to complete the task
-   - If no existing skill can do it, plan the code you will write
-   - Consider: What arguments will this skill need? What will it return? When would it be useful again?
-
-3. **PHASE 3: ACTION - THE SKILL-FIRST RULE**
-   - **If you need to write code**: ALWAYS use "create_skill" first. Never write throwaway code.
-   - Provide: name (snake_case), description (when to use this skill), code (with \`export async function run(args)\`), and argsSchema
-   - After creating the skill, it becomes immediately available—use it to complete the task
-   - **If a skill already exists**: Just use it directly
-   - Output valid JSON. Only ONE tool per turn.
-   - **JSON SYNTAX**: Do NOT put quotes around numbers (e.g. "lines": 100, not "lines": "100").
-
-4. **PHASE 4: SKILL QUALITY**
-   - Write skills that are general-purpose when possible (e.g., "csv_parser" not "parse_this_one_csv")
-   - Include error handling in your skill code
-   - Write clear descriptions so you know when to use the skill later
-</COGNITIVE_PROTOCOL>
-
-<SKILL_EXAMPLES>
-Tasks that REQUIRE creating a skill (if one doesn't exist):
-- "Convert this CSV to JSON" → create a csv_to_json skill
-- "Fetch data from an API" → create an api_fetcher skill
-- "Calculate statistics on this data" → create a stats_calculator skill
-- "Format this code" → create a code_formatter skill
-- "Parse this log file" → create a log_parser skill
-- "Generate a report" → create a report_generator skill
-
-Tasks that do NOT require a skill:
-- Reading a file (use read_file)
-- Listing files (use list_files)
-- Searching code (use recursive_grep)
-- Answering questions about code you've read (use final_answer)
-</SKILL_EXAMPLES>
-
-<MEMORY_RULES>
-- Use pagination for large files
-- Summarize what you read in <thinking> blocks
-</MEMORY_RULES>
-
-<TOOLS>
-**Communication:**
-- "final_answer": { text: string } -> Speak to user. Use when you have the answer or need to ask a question.
-
-**File Operations:**
-- "read_file": { path: string, start_line?: number, end_line?: number } -> Read file content (supports pagination)
-- "write_file": { path: string, content: string, createDirectories?: bool } -> Create new files or overwrite existing
-- "edit_file": { path: string, old_string: string, new_string: string } -> **PREFERRED for code changes.** Find and replace specific content.
-- "list_files": { path: string, recursive?: bool, pattern?: string } -> List directory contents
-- "create_directory": { path: string, recursive?: bool } -> Create a new directory (recursive by default)
-- "change_directory": { path: string } -> Change working directory within project root (use ".." to go up, "~" for root)
-
-**Code Intelligence:**
-- "recursive_grep": { pattern: string, path: string } -> Search code with regex
-- "generate_repo_map": { path?: string } -> Generate project structure map
-- "strategic_code_scanner": { path?: string } -> High-level codebase intelligence report
-- "web_search": { query: string } -> Search the web for documentation, tutorials, or information
-
-**Task Management:**
-- "todo": { action: "add"|"start"|"complete"|"fail"|"list"|"clear", task?: string, tasks?: string[], id?: number } -> Track task progress
-
-**Self-Improvement:**
-- "create_skill": { name: string, description: string, code: string, argsSchema?: object } -> **YOUR PRIMARY TOOL FOR NEW CAPABILITIES.** Create reusable skills.
-
-**Memory:**
-- "remember": { action: "save" | "recall", text: string, type?: "FACT"|"EPISODE" } -> Manage Long-Term Memory
-</TOOLS>
-
-<EDITING_BEST_PRACTICES>
-When modifying code:
-1. **PREFER edit_file** over write_file for existing files. It shows diffs and is safer.
-2. Use **exact string matching** - copy the EXACT content you want to replace, including whitespace
-3. For new files, use write_file
-4. For creating reusable code, use create_skill (it auto-registers as a tool)
-</EDITING_BEST_PRACTICES>
-
-<TASK_TRACKING>
-For multi-step tasks:
-1. Use todo with action:"add" and tasks:["task1", "task2", ...] to create a task list
-2. Use todo with action:"start" before beginning each task
-3. Use todo with action:"complete" when finishing each task
-4. This helps you and the user track progress
-</TASK_TRACKING>
-`;
+const SYSTEM_PROMPT = "<ROLE> Neo autonomous developer. Keep responses concise. Use tools via JSON with one tool per turn. Focus on skills first. </ROLE>";
 
 /**
  * Agent class - The core autonomous developer agent.
@@ -303,11 +188,15 @@ export class Agent {
     const tools = await registry.getAvailableTools();
     const toolList = tools.map(t => `"${t.name}"`).join(', ');
 
+    const repoMapSnippet = this.repoMap.length > MAX_REPO_MAP_CHARS
+      ? this.repoMap.slice(0, MAX_REPO_MAP_CHARS) + '\n... [truncated]'
+      : this.repoMap;
+
     let conversation = `
 ${SYSTEM_PROMPT}
 ${this.projectConfig}
 <CONTEXT_LAYER_0: PERSISTENT_KNOWLEDGE>
-${this.repoMap}
+${repoMapSnippet}
 
 ${this.getUserProfile()}
 </CONTEXT_LAYER_0>
@@ -614,7 +503,7 @@ ${goal}
       let cleanText = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
 
       // STEP 1: Try to find JSON with 'tool' field
-      let jsonStr = this.extractLastJsonObject(cleanText);
+      let jsonStr = this.extractBestJsonObject(cleanText);
 
       if (jsonStr) {
         // Patch common LLM typos - fix quoted numbers like "lines": "100"
@@ -622,6 +511,63 @@ ${goal}
 
         try {
           const parsed = JSON.parse(jsonStr);
+
+          // Handle alternative format: {"name": "tool_name", "arguments": {...}}
+          // Some models (especially Qwen) use this format instead of {"tool": ..., "args": ...}
+          if (parsed.name && typeof parsed.name === 'string' && !parsed.tool) {
+            logger.info("Converted name/arguments format to tool/args", { name: parsed.name });
+            // Handle arguments as string (OpenAI format) or object
+            let args = {};
+            if (typeof parsed.arguments === 'string') {
+              try { args = JSON.parse(parsed.arguments); } catch { args = {}; }
+            } else if (parsed.arguments && typeof parsed.arguments === 'object') {
+              args = parsed.arguments;
+            } else if (parsed.args && typeof parsed.args === 'object') {
+              args = parsed.args;
+            }
+            return { tool: parsed.name.trim(), args };
+          }
+
+          // Handle OpenAI function calling format: {"tool": {"type": "function", "function": {"name": "X", "arguments": "..."}}}
+          if (parsed.tool && typeof parsed.tool === 'object') {
+            let toolName: string | null = null;
+            let args: Record<string, unknown> = {};
+
+            // Format: {"tool": {"type": "function", "function": {"name": "X", "arguments": "..."}}}
+            if (parsed.tool.function && parsed.tool.function.name) {
+              toolName = parsed.tool.function.name;
+              if (typeof parsed.tool.function.arguments === 'string') {
+                try { args = JSON.parse(parsed.tool.function.arguments); } catch { args = {}; }
+              } else if (parsed.tool.function.arguments && typeof parsed.tool.function.arguments === 'object') {
+                args = parsed.tool.function.arguments;
+              }
+            }
+            // Format: {"tool": {"type": "X", "name": "X"}, "args": {...}}
+            else if (parsed.tool.name && typeof parsed.tool.name === 'string') {
+              toolName = parsed.tool.name;
+              args = (parsed.args && typeof parsed.args === 'object') ? parsed.args : {};
+            }
+
+            if (toolName) {
+              logger.info("Converted OpenAI function format to tool/args", { tool: toolName });
+              return { tool: toolName.trim(), args };
+            }
+          }
+
+          // Handle array format: [{"function": {"name": "X", "arguments": "..."}}]
+          if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].function) {
+            const func = parsed[0].function;
+            if (func.name) {
+              let args = {};
+              if (typeof func.arguments === 'string') {
+                try { args = JSON.parse(func.arguments); } catch { args = {}; }
+              } else if (func.arguments && typeof func.arguments === 'object') {
+                args = func.arguments;
+              }
+              logger.info("Converted array function format to tool/args", { tool: func.name });
+              return { tool: func.name.trim(), args };
+            }
+          }
 
           // Validate that tool field exists and is a non-empty string
           if (!parsed.tool || typeof parsed.tool !== 'string' || parsed.tool.trim() === '') {
@@ -690,6 +636,23 @@ ${goal}
    * @returns Parsed response or null if no XML tool found
    */
   private parseXmlToolCall(text: string): ParsedResponse | null {
+    // Handle single self-closing/simple tags like <create_skill name="..." code="..."/>
+    const singleTagMatch = text.match(/<([a-zA-Z0-9_]+)\s+([^>]*?)\/?>/);
+    if (singleTagMatch) {
+      const tag = singleTagMatch[1];
+      const attrsRaw = singleTagMatch[2];
+      const attrs: Record<string, unknown> = {};
+      const attrRegex = /(\w+)="([^"]*)"/g;
+      let m;
+      while ((m = attrRegex.exec(attrsRaw)) !== null) {
+        const key = m[1];
+        attrs[key] = m[2];
+      }
+      if (Object.keys(attrs).length > 0) {
+        return { tool: tag, args: attrs };
+      }
+    }
+
     // Match <tool>...</tool> or <tool_call>...</tool_call> blocks
     const toolBlockMatch = text.match(/<(?:tool|tool_call)>([\s\S]*?)<\/(?:tool|tool_call)>/i);
     if (!toolBlockMatch) {
@@ -717,6 +680,7 @@ ${goal}
 
   /**
    * Extracts parameters from XML tool call format.
+   * Handles multi-line values with leading/trailing whitespace.
    * @param text - XML text containing parameters
    * @returns Object with extracted parameters
    */
@@ -728,11 +692,25 @@ ${goal}
     const paramsBlock = paramsMatch ? paramsMatch[1] : text;
 
     // Extract individual parameters: <param_name>value</param_name>
-    const paramRegex = /<(\w+)>\s*([\s\S]*?)\s*<\/\1>/gi;
+    // Handle values that may span multiple lines with indentation
+    const paramRegex = /<(\w+)>([\s\S]*?)<\/\1>/gi;
     let match;
     while ((match = paramRegex.exec(paramsBlock)) !== null) {
       const key = match[1].toLowerCase();
-      let value: unknown = match[2].trim();
+      // Clean multi-line values: trim each line and join, then trim the result
+      let rawValue = match[2];
+      // If the value is on multiple lines, normalize it
+      let value: unknown = rawValue
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .join(' ')
+        .trim();
+
+      // If it was a single-line value, use that directly (trim already done)
+      if (!rawValue.includes('\n')) {
+        value = rawValue.trim();
+      }
 
       // Skip meta tags
       if (['tool_name', 'name', 'tool_parameters', 'parameters', 'args'].includes(key)) continue;
@@ -834,49 +812,70 @@ ${goal}
   }
 
   /**
-   * Extracts JSON object from text - searches for valid JSON with 'tool' field.
-   * Handles cases where there's extra text before/after the JSON.
-   * @param text - The text to extract JSON from
-   * @returns The extracted JSON string, or null if none found
+   * Extracts the most useful JSON object from free-form text.
+   * Prefers payloads that look like tool invocations (tool/name/function) over
+   * ancillary payloads (e.g., args schemas) that appear later in the text.
+   * @param text - The text to search for JSON objects
+   * @returns The best-matching JSON string, or null if none found
    */
-  private extractLastJsonObject(text: string): string | null {
+  private extractBestJsonObject(text: string): string | null {
     const firstBrace = text.indexOf('{');
-    if (firstBrace === -1) {
-      return null;
-    }
+    if (firstBrace === -1) return null;
 
-    // Find ALL closing brace positions to try as endpoints
     const closingBraces: number[] = [];
     for (let i = 0; i < text.length; i++) {
-      if (text[i] === '}') {
-        closingBraces.push(i);
-      }
+      if (text[i] === '}') closingBraces.push(i);
     }
+    if (closingBraces.length === 0) return null;
 
-    if (closingBraces.length === 0) {
-      return null;
-    }
+    const candidates: { json: string; parsed: unknown }[] = [];
 
-    // Try from the last closing brace backwards - find the first valid JSON with 'tool'
+    // Collect all parsable JSON snippets bounded by braces
     for (let endIdx = closingBraces.length - 1; endIdx >= 0; endIdx--) {
       const endPos = closingBraces[endIdx];
-
-      // Try each opening brace from the beginning
       let startPos = firstBrace;
       while (startPos !== -1 && startPos < endPos) {
         const candidate = text.substring(startPos, endPos + 1);
         try {
           const parsed = JSON.parse(candidate);
-          if (parsed && typeof parsed === 'object' && 'tool' in parsed) {
-            return candidate;
-          }
+          candidates.push({ json: candidate, parsed });
         } catch {
-          // Not valid JSON, try next opening brace
+          // ignore parse errors and keep scanning
         }
         startPos = text.indexOf('{', startPos + 1);
       }
     }
 
+    if (candidates.length === 0) return null;
+
+    // Helper to check if a parsed object looks like a tool call
+    const looksLikeToolCall = (parsed: unknown): boolean => {
+      if (!parsed || typeof parsed !== 'object') return false;
+      const obj = parsed as Record<string, unknown>;
+
+      const hasToolField = typeof obj.tool === 'string' && obj.tool.trim().length > 0;
+      const hasNameArgs =
+        typeof obj.name === 'string' &&
+        (typeof obj.arguments === 'string' || typeof obj.arguments === 'object');
+      const hasFunction =
+        typeof obj.tool === 'object' &&
+        obj.tool !== null &&
+        typeof (obj.tool as Record<string, unknown>).function === 'object';
+
+      // Array formats: [{"function": {"name": "...", "arguments": "..."}}, ...]
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const first = parsed[0] as Record<string, unknown>;
+        if (first?.function && (first.function as Record<string, unknown>).name) return true;
+      }
+
+      return hasToolField || hasNameArgs || hasFunction;
+    };
+
+    // Prefer the first candidate that looks like a tool call (scanned from end to start)
+    const toolCandidate = candidates.find((c) => looksLikeToolCall(c.parsed));
+    if (toolCandidate) return toolCandidate.json;
+
+    // If no tool-like candidate is found, return null so the caller can prompt the model to retry
     return null;
   }
 
@@ -907,26 +906,22 @@ ${goal}
 
   /**
    * Sets up the interrupt handler for user cancellation.
-   * Uses both keypress events (for Escape) and SIGINT (for Ctrl+C).
+   * Uses SIGINT (Ctrl+C) only - avoids raw mode conflicts with inquirer.
    */
   private setupInterruptHandler(): void {
-    // Always set up SIGINT handler for Ctrl+C - works more reliably on Windows
+    // Use SIGINT handler for Ctrl+C - most reliable across platforms
     process.on('SIGINT', this.onSigint);
 
-    // Try to set up keypress handler for Escape key
-    if (process.stdin.isTTY) {
+    // Set up keypress handler ONCE without raw mode manipulation
+    // Raw mode conflicts with inquirer and causes cursor lag
+    if (process.stdin.isTTY && !keypressEventsInitialized) {
       try {
-        // Ensure stdin is in the right state
-        if (process.stdin.isPaused()) {
-          process.stdin.resume();
-        }
         readline.emitKeypressEvents(process.stdin);
-        if (!process.stdin.isRaw) {
-          process.stdin.setRawMode(true);
-        }
+        keypressEventsInitialized = true;
+        // Add keypress listener but DON'T set raw mode - let inquirer manage it
         process.stdin.on('keypress', this.onKeypress);
       } catch (e) {
-        // Log but don't fail - SIGINT will still work
+        // SIGINT will still work as fallback
         logger.warn("Could not set up keypress handler", e);
       }
     }
@@ -939,21 +934,14 @@ ${goal}
     // Remove SIGINT handler
     process.removeListener('SIGINT', this.onSigint);
 
-    // Clean up keypress handler
+    // Remove keypress handler but DON'T touch raw mode or pause stdin
+    // Let inquirer manage terminal state to avoid conflicts
     if (process.stdin.isTTY) {
       try {
         process.stdin.removeListener('keypress', this.onKeypress);
-        // Only change raw mode if currently in raw mode
-        if (process.stdin.isRaw) {
-          process.stdin.setRawMode(false);
-        }
-        // DO NOT pause stdin - let inquirer in main loop manage it
-        // Pausing here causes the "need to press Enter" bug
       } catch {
         // Ignore errors during cleanup
       }
     }
-    // Ensure cursor is visible
-    process.stdout.write('\x1B[?25h');
   }
 }
