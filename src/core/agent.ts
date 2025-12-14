@@ -604,6 +604,7 @@ ${goal}
   /**
    * Parses LLM response to extract JSON tool call.
    * Implements robust parsing with error recovery.
+   * Handles JSON, XML tool format, and plain conversational responses.
    * @param text - Raw LLM response text
    * @returns Parsed response object
    */
@@ -612,51 +613,66 @@ ${goal}
       // Remove markdown code blocks
       let cleanText = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
 
-      // Try to find the LAST valid JSON object (more reliable than first-to-last brace)
-      // This handles cases where LLM outputs code/text with braces before the actual JSON
+      // STEP 1: Try to find JSON with 'tool' field
       let jsonStr = this.extractLastJsonObject(cleanText);
 
-      if (!jsonStr) {
-        // No JSON found at all - prompt the model to output proper JSON
-        // DO NOT treat as final_answer - this causes premature termination!
-        logger.warn("No JSON found in LLM response", { responsePreview: text.substring(0, 200) });
-        return {
-          tool: 'system_error',
-          args: {
-            message: "No valid JSON command found in your response. You MUST output a JSON object with 'tool' and 'args' fields. Example: {\"tool\": \"read_file\", \"args\": {\"path\": \"file.txt\"}}"
+      if (jsonStr) {
+        // Patch common LLM typos - fix quoted numbers like "lines": "100"
+        jsonStr = jsonStr.replace(/:\s*"(\d+)"/g, ': $1');
+
+        try {
+          const parsed = JSON.parse(jsonStr);
+
+          // Validate that tool field exists and is a non-empty string
+          if (!parsed.tool || typeof parsed.tool !== 'string' || parsed.tool.trim() === '') {
+            logger.warn("JSON missing tool field", { parsed });
+            return {
+              tool: 'system_error',
+              args: {
+                message: "Your JSON is missing the 'tool' field. You MUST specify which tool to use. Example: {\"tool\": \"read_file\", \"args\": {\"path\": \"file.txt\"}}"
+              }
+            };
           }
-        };
-      }
 
-      // Patch common LLM typos - fix quoted numbers like "lines": "100"
-      jsonStr = jsonStr.replace(/:\s*"(\d+)"/g, ': $1');
-
-      try {
-        const parsed = JSON.parse(jsonStr);
-
-        // Validate that tool field exists and is a non-empty string
-        if (!parsed.tool || typeof parsed.tool !== 'string' || parsed.tool.trim() === '') {
-          logger.warn("JSON missing tool field", { parsed });
+          return {
+            tool: parsed.tool.trim(),
+            args: (parsed.args && typeof parsed.args === 'object') ? parsed.args : {}
+          };
+        } catch (parseError) {
+          const error = parseError as Error;
+          logger.warn("JSON parse error", { error: error.message, jsonStr: jsonStr.substring(0, 200) });
           return {
             tool: 'system_error',
-            args: {
-              message: "Your JSON is missing the 'tool' field. You MUST specify which tool to use. Example: {\"tool\": \"read_file\", \"args\": {\"path\": \"file.txt\"}}"
-            }
+            args: { message: `JSON Syntax Error: ${error.message}. Check for trailing commas, unescaped quotes, or malformed structure.` }
           };
         }
+      }
 
+      // STEP 2: Try to parse XML tool format (common with Qwen and other models)
+      const xmlResult = this.parseXmlToolCall(text);
+      if (xmlResult) {
+        logger.info("Parsed XML tool call", { tool: xmlResult.tool });
+        return xmlResult;
+      }
+
+      // STEP 3: Check if this looks like a conversational response (final answer)
+      // If the model is clearly trying to communicate with the user, treat it as final_answer
+      if (this.looksLikeConversationalResponse(text)) {
+        logger.info("Detected conversational response, treating as final_answer");
         return {
-          tool: parsed.tool.trim(),
-          args: (parsed.args && typeof parsed.args === 'object') ? parsed.args : {}
-        };
-      } catch (parseError) {
-        const error = parseError as Error;
-        logger.warn("JSON parse error", { error: error.message, jsonStr: jsonStr.substring(0, 200) });
-        return {
-          tool: 'system_error',
-          args: { message: `JSON Syntax Error: ${error.message}. Check for trailing commas, unescaped quotes, or malformed structure.` }
+          tool: 'final_answer',
+          args: { text: this.cleanFinalAnswerText(text) }
         };
       }
+
+      // STEP 4: No valid format found - ask model to retry
+      logger.warn("No JSON found in LLM response", { responsePreview: text.substring(0, 200) });
+      return {
+        tool: 'system_error',
+        args: {
+          message: "No valid JSON command found. You MUST output JSON like: {\"tool\": \"final_answer\", \"args\": {\"text\": \"your response\"}} or {\"tool\": \"read_file\", \"args\": {\"path\": \"file.txt\"}}"
+        }
+      };
     } catch (e) {
       const error = e as Error;
       logger.error("Unexpected error in parseResponse", error);
@@ -665,6 +681,156 @@ ${goal}
         args: { message: `Response parsing failed: ${error.message}. Please output valid JSON.` }
       };
     }
+  }
+
+  /**
+   * Parses XML tool call format that some models output.
+   * Handles formats like: <tool><tool_name>X</tool_name><tool_parameters><param>value</param></tool_parameters></tool>
+   * @param text - Raw LLM response text
+   * @returns Parsed response or null if no XML tool found
+   */
+  private parseXmlToolCall(text: string): ParsedResponse | null {
+    // Match <tool>...</tool> or <tool_call>...</tool_call> blocks
+    const toolBlockMatch = text.match(/<(?:tool|tool_call)>([\s\S]*?)<\/(?:tool|tool_call)>/i);
+    if (!toolBlockMatch) {
+      // Also try simpler format: <tool_name>X</tool_name>
+      const simpleMatch = text.match(/<tool_name>\s*(\w+)\s*<\/tool_name>/i);
+      if (!simpleMatch) return null;
+
+      const toolName = simpleMatch[1];
+      const args = this.extractXmlParameters(text);
+      return { tool: toolName, args };
+    }
+
+    const toolBlock = toolBlockMatch[1];
+
+    // Extract tool name
+    const nameMatch = toolBlock.match(/<tool_name>\s*(\w+)\s*<\/tool_name>/i) ||
+                      toolBlock.match(/<name>\s*(\w+)\s*<\/name>/i);
+    if (!nameMatch) return null;
+
+    const toolName = nameMatch[1];
+    const args = this.extractXmlParameters(toolBlock);
+
+    return { tool: toolName, args };
+  }
+
+  /**
+   * Extracts parameters from XML tool call format.
+   * @param text - XML text containing parameters
+   * @returns Object with extracted parameters
+   */
+  private extractXmlParameters(text: string): Record<string, unknown> {
+    const args: Record<string, unknown> = {};
+
+    // Match <tool_parameters>...</tool_parameters> or <parameters>...</parameters> or <args>...</args>
+    const paramsMatch = text.match(/<(?:tool_parameters|parameters|args)>([\s\S]*?)<\/(?:tool_parameters|parameters|args)>/i);
+    const paramsBlock = paramsMatch ? paramsMatch[1] : text;
+
+    // Extract individual parameters: <param_name>value</param_name>
+    const paramRegex = /<(\w+)>\s*([\s\S]*?)\s*<\/\1>/gi;
+    let match;
+    while ((match = paramRegex.exec(paramsBlock)) !== null) {
+      const key = match[1].toLowerCase();
+      let value: unknown = match[2].trim();
+
+      // Skip meta tags
+      if (['tool_name', 'name', 'tool_parameters', 'parameters', 'args'].includes(key)) continue;
+
+      // Try to parse as number or boolean
+      if (value === 'true') value = true;
+      else if (value === 'false') value = false;
+      else if (/^\d+$/.test(value as string)) value = parseInt(value as string, 10);
+
+      args[key] = value;
+    }
+
+    return args;
+  }
+
+  /**
+   * Determines if the response looks like a conversational response meant for the user.
+   * @param text - Raw LLM response text
+   * @returns True if this looks like a final answer
+   */
+  private looksLikeConversationalResponse(text: string): boolean {
+    const trimmed = text.trim();
+
+    // If it's very short, probably not a full response
+    if (trimmed.length < 20) return false;
+
+    // If it contains tool-like XML but we couldn't parse it, don't treat as conversation
+    if (/<tool|<tool_name|<tool_call/i.test(trimmed)) return false;
+
+    // If it contains a substantial JSON object (even without 'tool'), don't treat as conversation
+    // This catches cases where the model outputs JSON args without the tool wrapper
+    if (this.containsSubstantialJson(trimmed)) return false;
+
+    // If it has clear conversational indicators
+    const conversationalPatterns = [
+      /^(I |I'm |I've |I'll |I can |I will |I would |I should |I need |Let me |Here |The |This |That |Yes|No|Sure|Okay|Based on|Looking at|After |Having )/i,
+      /\b(you |your |you're |you've |you'll )\b/i,
+      /\?\s*$/,  // Ends with a question
+      /!\s*$/,   // Ends with exclamation
+      /\.\s*$/,  // Ends with period (sentences)
+    ];
+
+    // Must match at least one conversational pattern and NOT look like code/data
+    const looksConversational = conversationalPatterns.some(p => p.test(trimmed));
+    const looksLikeCode = /^[\[\{]/.test(trimmed) || /^\s*(function|const|let|var|class|import|export|def |async )/i.test(trimmed);
+
+    return looksConversational && !looksLikeCode;
+  }
+
+  /**
+   * Cleans up text for final_answer output by removing internal XML tags and artifacts.
+   * @param text - Raw text from LLM response
+   * @returns Cleaned text suitable for display to user
+   */
+  private cleanFinalAnswerText(text: string): string {
+    return text
+      // Remove internal XML tags that leak into output
+      .replace(/<\/?USER_OBJECTIVE>/gi, '')
+      .replace(/<\/?ROLE>/gi, '')
+      .replace(/<\/?thinking>/gi, '')
+      .replace(/<\/?OUTPUT>/gi, '')
+      .replace(/<\/?RESPONSE>/gi, '')
+      // Remove any remaining XML-like tags that look internal
+      .replace(/<\/?[A-Z_]{3,}>/g, '')
+      // Clean up extra whitespace left behind
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  /**
+   * Checks if text contains a substantial JSON object (multi-line or with nested properties).
+   * Used to avoid treating responses with JSON payloads as conversational.
+   * @param text - Text to check
+   * @returns True if substantial JSON is found
+   */
+  private containsSubstantialJson(text: string): boolean {
+    // Look for JSON objects that span multiple lines or have nested structure
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return false;
+
+    const jsonCandidate = jsonMatch[0];
+    // If it's small (less than 50 chars), it's probably not a tool call payload
+    if (jsonCandidate.length < 50) return false;
+
+    // Try to parse it
+    try {
+      const parsed = JSON.parse(jsonCandidate);
+      // If it has multiple keys or nested objects, it's substantial
+      if (typeof parsed === 'object' && parsed !== null) {
+        const keys = Object.keys(parsed);
+        return keys.length >= 2;
+      }
+    } catch {
+      // Not valid JSON, check if it looks like attempted JSON (has colons and quotes)
+      return /"\w+":\s*["\[\{]/.test(jsonCandidate);
+    }
+
+    return false;
   }
 
   /**

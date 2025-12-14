@@ -121,10 +121,10 @@ export const config = {
 
   /** UI configuration */
   ui: {
-    /** Spinner animation frames */
-    spinnerFrames: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
-    /** Spinner update interval in milliseconds */
-    spinnerIntervalMs: 80,
+    /** Binary indicator frames (alternates with thinking messages) */
+    spinnerFrames: ['1', '0'],
+    /** Binary indicator update interval - synced with message cycle */
+    spinnerIntervalMs: 2000,
     /** Maximum argument display length */
     maxArgDisplayLength: 70,
     /** Maximum output display length */
@@ -143,6 +143,13 @@ export const config = {
       'Decrypting the stream...',
       'Jacking in...',
       'Loading construct...',
+      'Bypassing the firewall...',
+      'Compiling the future...',
+      'Accessing the mainframe...',
+      'Parsing reality...',
+      'Initializing protocol...',
+      'Scanning the horizon...',
+      'Reticulating splines...',
     ] as string[],
   },
 
