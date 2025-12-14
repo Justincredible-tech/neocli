@@ -82,7 +82,10 @@ export class AgentUI {
   stop(): void {
     this.stopSpinner();
     this.stopMessageCycle();
+    // Finalize logUpdate output
     logUpdate.done();
+    // Clear the current line to remove any spinner artifacts
+    process.stdout.write('\x1B[2K\x1B[0G');
     this.showCursor();
     this.restoreTerminal();
   }
@@ -111,16 +114,15 @@ export class AgentUI {
         if (process.stdin.isRaw) {
           process.stdin.setRawMode(false);
         }
-        // Resume stdin to ensure it's responsive
-        process.stdin.resume();
-        // Clear any pending input
-        process.stdin.read();
+        // DO NOT pause or read stdin here - let inquirer manage it
       } catch {
         // Ignore errors - stdin may not support all operations
       }
     }
-    // Write a newline to ensure cursor is on a fresh line
+    // Ensure cursor is at start of a new line
     process.stdout.write('\n');
+    // Reset cursor position to ensure proper alignment
+    process.stdout.write('\x1B[0G');
   }
 
   /**

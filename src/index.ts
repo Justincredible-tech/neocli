@@ -56,15 +56,19 @@ function loadProjectConfig(): string {
 function resetTerminalState(): void {
   if (process.stdin.isTTY) {
     try {
+      // Ensure raw mode is off so inquirer can work properly
       if (process.stdin.isRaw) {
         process.stdin.setRawMode(false);
       }
-      process.stdin.pause();
+      // DO NOT pause stdin - inquirer needs it active
+      // Just ensure it's in the right mode
     } catch {
       // Ignore errors
     }
   }
+  // Show cursor and reset its position
   process.stdout.write('\x1B[?25h'); // Show cursor
+  process.stdout.write('\x1B[0G');   // Move cursor to column 0
 }
 
 /**
@@ -189,7 +193,11 @@ async function main(): Promise<void> {
   while (true) {
     try {
       resetTerminalState();
-      await new Promise(resolve => setTimeout(resolve, 50));
+      // Allow terminal to fully settle before accepting input
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Clear any stale terminal state from logUpdate
+      process.stdout.write('\x1B[0K'); // Clear to end of line
 
       const { input } = await inquirer.prompt([{
         type: 'input',
@@ -223,8 +231,7 @@ async function main(): Promise<void> {
 
       // Regular agent interaction
       await agent.run(trimmedInput);
-      resetTerminalState();
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Terminal state will be reset at top of loop
 
     } catch (error) {
       resetTerminalState();

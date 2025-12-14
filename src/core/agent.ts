@@ -718,25 +718,50 @@ ${goal}
    * Keypress handler for interrupt detection.
    */
   private onKeypress = (_str: string, key: { name: string; ctrl: boolean }): void => {
-    if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
-      if (this.abortController) {
-        this.abortController.abort();
-      }
+    if (key && (key.name === 'escape' || (key.ctrl && key.name === 'c'))) {
+      this.triggerAbort();
     }
   };
 
   /**
+   * SIGINT handler for Ctrl+C (fallback for when keypress doesn't work).
+   */
+  private onSigint = (): void => {
+    this.triggerAbort();
+  };
+
+  /**
+   * Triggers the abort controller to cancel the current operation.
+   */
+  private triggerAbort(): void {
+    if (this.abortController && !this.abortController.signal.aborted) {
+      this.abortController.abort();
+    }
+  }
+
+  /**
    * Sets up the interrupt handler for user cancellation.
+   * Uses both keypress events (for Escape) and SIGINT (for Ctrl+C).
    */
   private setupInterruptHandler(): void {
+    // Always set up SIGINT handler for Ctrl+C - works more reliably on Windows
+    process.on('SIGINT', this.onSigint);
+
+    // Try to set up keypress handler for Escape key
     if (process.stdin.isTTY) {
       try {
+        // Ensure stdin is in the right state
+        if (process.stdin.isPaused()) {
+          process.stdin.resume();
+        }
         readline.emitKeypressEvents(process.stdin);
-        process.stdin.setRawMode(true);
-        process.stdin.resume();
+        if (!process.stdin.isRaw) {
+          process.stdin.setRawMode(true);
+        }
         process.stdin.on('keypress', this.onKeypress);
-      } catch {
-        // Ignore errors if stdin doesn't support raw mode
+      } catch (e) {
+        // Log but don't fail - SIGINT will still work
+        logger.warn("Could not set up keypress handler", e);
       }
     }
   }
@@ -745,6 +770,10 @@ ${goal}
    * Cleans up the interrupt handler and restores terminal state.
    */
   private cleanupInterruptHandler(): void {
+    // Remove SIGINT handler
+    process.removeListener('SIGINT', this.onSigint);
+
+    // Clean up keypress handler
     if (process.stdin.isTTY) {
       try {
         process.stdin.removeListener('keypress', this.onKeypress);
@@ -752,7 +781,8 @@ ${goal}
         if (process.stdin.isRaw) {
           process.stdin.setRawMode(false);
         }
-        process.stdin.pause();
+        // DO NOT pause stdin - let inquirer in main loop manage it
+        // Pausing here causes the "need to press Enter" bug
       } catch {
         // Ignore errors during cleanup
       }
