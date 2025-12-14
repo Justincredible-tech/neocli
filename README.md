@@ -127,7 +127,7 @@ This is a React e-commerce application with a Node.js backend.
 
 1. **Node.js 18+** — [Download](https://nodejs.org/)
 2. **Ollama** — [Download](https://ollama.ai/)
-3. **A Code Model** — We recommend `qwen2.5-coder:32b` or `llama3.1:70b`
+3. **A Code Model** — We recommend `qwen30-coder:30b`
 
 ### Install Ollama & Model
 
@@ -254,7 +254,7 @@ REQUIRE_APPROVAL=true
 
 | Hardware | Recommended Model | Context |
 |----------|-------------------|---------|
-| 64GB+ RAM / RTX 4090 | `qwen2.5-coder:32b` | 32K |
+| 32GB+ RAM / RTX 4090 | `qwen3-coder:30b` | 32K |
 | 32GB RAM / RTX 3090 | `qwen2.5-coder:14b` | 16K |
 | 16GB RAM / RTX 3080 | `qwen2.5-coder:7b` | 8K |
 | 8GB RAM / M1 Mac | `qwen2.5-coder:3b` | 4K |
