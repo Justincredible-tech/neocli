@@ -226,6 +226,7 @@ export class SecurityGuard {
   static isHighRisk(tool: string, args: unknown): boolean {
     const riskyTools = new Set([
       'write_file',
+      'create_directory',
       'execute_command',
       'create_skill',
       'git_automator',

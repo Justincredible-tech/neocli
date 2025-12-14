@@ -117,6 +117,8 @@ Tasks that do NOT require a skill:
 - "write_file": { path: string, content: string, createDirectories?: bool } -> Create new files or overwrite existing
 - "edit_file": { path: string, old_string: string, new_string: string } -> **PREFERRED for code changes.** Find and replace specific content.
 - "list_files": { path: string, recursive?: bool, pattern?: string } -> List directory contents
+- "create_directory": { path: string, recursive?: bool } -> Create a new directory (recursive by default)
+- "change_directory": { path: string } -> Change working directory within project root (use ".." to go up, "~" for root)
 
 **Code Intelligence:**
 - "recursive_grep": { pattern: string, path: string } -> Search code with regex
