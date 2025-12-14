@@ -11,6 +11,7 @@ import { SecurityGuard } from '../utils/security.js';
 import { logger } from '../utils/logger.js';
 import { memory } from './memory_store.js';
 import { config } from '../config.js';
+import { formatCompleteResponse } from '../utils/formatter.js';
 import chalk from 'chalk';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -171,6 +172,8 @@ export class Agent {
   private repoMap: string = "";
   private readonly memoryFile: string;
   private projectConfig: string = "";
+  private consecutiveParseErrors: number = 0;
+  private readonly maxConsecutiveParseErrors: number = 5;
 
   constructor() {
     // Load configuration
@@ -292,6 +295,7 @@ export class Agent {
     logger.info("New Run", { goal });
     this.ui.start();
     this.actionHistory = [];
+    this.consecutiveParseErrors = 0;  // Reset parse error counter for new run
     this.abortController = new AbortController();
 
     this.setupInterruptHandler();
@@ -331,11 +335,28 @@ ${goal}
         // 2. PARSE
         const json = this.parseResponse(responseText);
 
-        // --- SAFETY: Thinking Trap ---
+        // --- SAFETY: Parse Error Recovery ---
         if (json.tool === 'system_error') {
+          this.consecutiveParseErrors++;
+          logger.warn(`Parse error ${this.consecutiveParseErrors}/${this.maxConsecutiveParseErrors}`, { message: json.args.message });
+
+          // If too many consecutive parse errors, ask the user for help
+          if (this.consecutiveParseErrors >= this.maxConsecutiveParseErrors) {
+            this.ui.stop();
+            const errorMsg = `I'm having trouble processing responses from the model (${this.consecutiveParseErrors} consecutive parse errors). The model may not be outputting valid JSON. Please try rephrasing your request or check if Ollama is running correctly.`;
+            console.log(formatCompleteResponse(errorMsg));
+            this.saveChatHistory(goal, errorMsg);
+            return { success: false, output: errorMsg, steps };
+          }
+
+          this.ui.updateOutput(chalk.yellow(`[Parse Error ${this.consecutiveParseErrors}/${this.maxConsecutiveParseErrors}] Asking model to retry...`));
           conversation += `\nSYSTEM_ERROR: ${json.args.message}`;
-          continue; 
+          steps++;  // Count parse errors as steps to prevent infinite loops
+          continue;
         }
+
+        // Reset consecutive parse errors on successful parse
+        this.consecutiveParseErrors = 0;
 
         // --- SAFETY: Loop Detection ---
         if (this.detectLoop(json.tool, json.args as Record<string, unknown>)) {
@@ -373,7 +394,8 @@ ${goal}
             argsObj.result ||
             'No response content was provided by the model.'
           );
-          console.log(chalk.green(`\nNeo: ${output}`));
+          // Format the output with word wrapping and markdown styling
+          console.log(formatCompleteResponse(output));
           this.saveChatHistory(goal, output);
           return { success: true, output, steps };
         }
@@ -590,41 +612,106 @@ ${goal}
       // Remove markdown code blocks
       let cleanText = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
 
-      const startIndex = cleanText.indexOf('{');
-      const endIndex = cleanText.lastIndexOf('}');
+      // Try to find the LAST valid JSON object (more reliable than first-to-last brace)
+      // This handles cases where LLM outputs code/text with braces before the actual JSON
+      let jsonStr = this.extractLastJsonObject(cleanText);
 
-      if (startIndex === -1 || endIndex === -1 || endIndex <= startIndex) {
-        // Check for thinking block without command
-        if (text.includes('<thinking>') && !text.includes('{')) {
-          return {
-            tool: 'system_error',
-            args: { message: "Thinking block found, but NO JSON command. You must output the JSON block." }
-          };
-        }
-        return { tool: 'final_answer', args: { text: text } };
+      if (!jsonStr) {
+        // No JSON found at all - prompt the model to output proper JSON
+        // DO NOT treat as final_answer - this causes premature termination!
+        logger.warn("No JSON found in LLM response", { responsePreview: text.substring(0, 200) });
+        return {
+          tool: 'system_error',
+          args: {
+            message: "No valid JSON command found in your response. You MUST output a JSON object with 'tool' and 'args' fields. Example: {\"tool\": \"read_file\", \"args\": {\"path\": \"file.txt\"}}"
+          }
+        };
       }
-
-      let jsonStr = cleanText.substring(startIndex, endIndex + 1);
 
       // Patch common LLM typos - fix quoted numbers like "lines": "100"
       jsonStr = jsonStr.replace(/:\s*"(\d+)"/g, ': $1');
 
       try {
         const parsed = JSON.parse(jsonStr);
+
+        // Validate that tool field exists and is a non-empty string
+        if (!parsed.tool || typeof parsed.tool !== 'string' || parsed.tool.trim() === '') {
+          logger.warn("JSON missing tool field", { parsed });
+          return {
+            tool: 'system_error',
+            args: {
+              message: "Your JSON is missing the 'tool' field. You MUST specify which tool to use. Example: {\"tool\": \"read_file\", \"args\": {\"path\": \"file.txt\"}}"
+            }
+          };
+        }
+
         return {
-          tool: String(parsed.tool || 'final_answer'),
+          tool: parsed.tool.trim(),
           args: (parsed.args && typeof parsed.args === 'object') ? parsed.args : {}
         };
       } catch (parseError) {
         const error = parseError as Error;
+        logger.warn("JSON parse error", { error: error.message, jsonStr: jsonStr.substring(0, 200) });
         return {
           tool: 'system_error',
-          args: { message: `JSON Syntax Error: ${error.message}. Check for trailing commas or quotes.` }
+          args: { message: `JSON Syntax Error: ${error.message}. Check for trailing commas, unescaped quotes, or malformed structure.` }
         };
       }
-    } catch {
-      return { tool: 'final_answer', args: { text: text } };
+    } catch (e) {
+      const error = e as Error;
+      logger.error("Unexpected error in parseResponse", error);
+      return {
+        tool: 'system_error',
+        args: { message: `Response parsing failed: ${error.message}. Please output valid JSON.` }
+      };
     }
+  }
+
+  /**
+   * Extracts JSON object from text - searches for valid JSON with 'tool' field.
+   * Handles cases where there's extra text before/after the JSON.
+   * @param text - The text to extract JSON from
+   * @returns The extracted JSON string, or null if none found
+   */
+  private extractLastJsonObject(text: string): string | null {
+    const firstBrace = text.indexOf('{');
+    if (firstBrace === -1) {
+      return null;
+    }
+
+    // Find ALL closing brace positions to try as endpoints
+    const closingBraces: number[] = [];
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '}') {
+        closingBraces.push(i);
+      }
+    }
+
+    if (closingBraces.length === 0) {
+      return null;
+    }
+
+    // Try from the last closing brace backwards - find the first valid JSON with 'tool'
+    for (let endIdx = closingBraces.length - 1; endIdx >= 0; endIdx--) {
+      const endPos = closingBraces[endIdx];
+
+      // Try each opening brace from the beginning
+      let startPos = firstBrace;
+      while (startPos !== -1 && startPos < endPos) {
+        const candidate = text.substring(startPos, endPos + 1);
+        try {
+          const parsed = JSON.parse(candidate);
+          if (parsed && typeof parsed === 'object' && 'tool' in parsed) {
+            return candidate;
+          }
+        } catch {
+          // Not valid JSON, try next opening brace
+        }
+        startPos = text.indexOf('{', startPos + 1);
+      }
+    }
+
+    return null;
   }
 
   /**
